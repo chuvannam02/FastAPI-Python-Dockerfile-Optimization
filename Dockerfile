@@ -1,15 +1,19 @@
 # syntax=docker/dockerfile:1.7-labs
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:2a2a8fdb0dd5e24df6bf6611237b2b1fe06e681ac47365cab58477bee3559978 AS builder 
 ENV UV_LINK_MODE=copy
+
 ARG TARGETARCH
-# Copy shared Libraries đủ để chạy ứng dụng trong môi trường distroless
+
+# Copy shared libraries đủ để chạy ứng dụng trong môi trường distroless
 # Kiểm tra shared libraries cần thiết với lệnh:
-# Ldd $(which python3) và các thư viện khác trong virtual environment sau khi cài đặt các package cần thiết (kiểm tra trước khi build)
-# Mỗi kiến trúc sẽ đặt thư viện trong các thư mục khác nhau, ví dụ: /lib/x86_64–Linux-gnu/ cho amd64, /lib/aarch64–Linux-gnu/ cho arm64 # do đó cần xác định kiến trúc và copy từ thư mục tương ứng.
+# ldd $(which python3) và các thư viện khác trong virtual environment sau khi cài đặt các package cần thiết (kiểm tra trước khi build)
+# Mỗi kiến trúc sẽ đặt thư viện trong các thư mục khác nhau, ví dụ: /lib/x86_64-linux-gnu/ cho amd64, /lib/aarch64-linux-gnu/ cho arm64
+# do đó cần xác định kiến trúc và copy từ thư mục tương ứng. 
 # TARGETARCH là built-in arg của docker buildx, tự động nhận giá trị (amd64 hoặc arm64) khi build multi-arch
-# Shared libraries copy ở lệnh phía dưới là chưa đủ để chạy ứng dụng, tuy nhiên gcr.io/distroless/base-debian12 (image sử dụng làm base image
-# gcr.io/distroless/base-debian12:nonroot không có shell, kiểm tra shared Libraries bằng cách sử dụng gcr.io/distroless/base-debian12:debug
-# gcr.io/distroless/base-debian12:debug tương tự gcr.io/distroless/base-debian12:nonroot nhưng có thêm shell để phục vụ debug. 
+# Shared libraries copy ở lệnh phía dưới là chưa đủ để chạy ứng dụng, tuy nhiên gcr.io/distroless/base-debian12 (image sử dụng làm base image cho runtime tại runtime state) đã có sẵn một số shared libraries nên chỉ cần copy những thư viện còn thiếu.
+# gcr.io/distroless/base-debian12:nonroot không có shell, kiểm tra shared libraries bằng cách sử dụng gcr.io/distroless/base-debian12:debug
+# gcr.io/distroless/base-debian12:debug tương tự gcr.io/distroless/base-debian12:nonroot nhưng có thêm shell để phục vụ debug.
+
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
       LIBARCH="x86_64"; \
     elif [ "$TARGETARCH" = "arm64" ]; then \
@@ -33,11 +37,12 @@ WORKDIR /build
 # Sử dụng cache để tăng tốc độ build
 # Cài đặt dependencies trong uv virtual environment
 # Sử dụng mount type=bind để bind các file uv.lock và pyproject.toml từ host vào container mount thay vì copy.
-# –frozen để đảm bảo chỉ cài đặt đúng phiên bản dependencies trong uv.lock, không update uv.lock
-# —-no-install-project để không cài đặt project hiện tại (chỉ cài đặt dependencies)
+# --frozen để đảm bảo chỉ cài đặt đúng phiên bản dependencies trong uv.lock, không update uv.lock
+# --no-install-project để không cài đặt project hiện tại (chỉ cài đặt dependencies)
 # --no-dev để không cài đặt dev dependencies
-# -no-editable để không cài đặt editable mode
-# starlette 8.46.2 dính CVE-2825-62727 CVE-2825-54121, nâng cấp để vá lỗi bảo mật (do thay đổi pyproject.toml và file uv.lock sẽ vi phạm nội c
+# --no-editable để không cài đặt editable mode
+# starlette 0.46.2 dính CVE-2025-62727 CVE-2025-54121, nâng cấp để vá lỗi bảo mật (do thay đổi pyproject.toml và file uv.lock sẽ vi phạm nội quy nên chạy lệnh install riêng)
+
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
@@ -45,9 +50,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install "starlette==0.49.1" --no-deps
 
 # Sử dụng distroless làm base image cho runtime để đảm bảo tính bảo mật và tối ưu kích thước image
-# Chọn distroless thay vì alpine vì alpine sử dụng must libc, trong khi python và nhiều thư viện phổ biến trong python được biên dịch với glit # distroless giúp ứng dụng chạy ổn định hơn và cũng rất nhẹ.
-# cc-debian12 có nhiều shared Libraries cần thiết cho python và các package phổ biến hơn so với base-debian12
-# tuy nhiên khi đã kiểm tra kỹ các shared Libraries cần thiết (với lệnh Ldd) và copy đầy đủ từ builder stage thì base-debian12 sẽ giúp tối ưu 
+# Chọn distroless thay vì alpine vì alpine sử dụng musl libc, trong khi python và nhiều thư viện phổ biến trong python được biên dịch với glibc, dẫn đến các vấn đề tương thích.
+# distroless giúp ứng dụng chạy ổn định hơn và cũng rất nhẹ.
+# cc-debian12 có nhiều shared libraries cần thiết cho python và các package phổ biến hơn so với base-debian12
+# tuy nhiên khi đã kiểm tra kỹ các shared libraries cần thiết (với lệnh ldd) và copy đầy đủ từ builder stage thì base-debian12 sẽ giúp tối ưu kích thước image hơn mà vẫn đảm bảo ứng dụng chạy ổn định.
+
 FROM gcr.io/distroless/base-debian13 AS runtime
 LABEL maintainer="Thanh Nguyen The"
 LABEL maintainer.email="thanhnt.devops@gmail.com"
@@ -69,9 +76,9 @@ COPY --from=builder --chown=nonroot:nonroot /build/.venv/ /app/.venv/
 COPY --chown=nonroot:nonroot src/ ./src/
 
 # Thiết lập environment variables
-# Do runtime limit là 1 VCPU, 512MB RAM nên thiết lập WORKERS=2 thay vì 3 (nguy cơ 00M). Công thức worker = (2 x số lượng vCPU + 1) chỉ áp dụn 
-# LD_LIBRARY_PATH để hệ thống có thể tìm thấy các shared Libraries cần thiết tại thư mục mới thay vì thư mục mặc đinh (/lib/x86_64–Linux-gnu t 
-# shared Libraries không có trong /lib/multi-arch sẽ tiếp tục được load từ thư mục mặc định của hệ thống
+# Do runtime limit là 1 vCPU, 512MB RAM nên thiết lập WORKERS=2 thay vì 3 (nguy cơ OOM). Công thức worker = (2 x số lượng vCPU + 1) chỉ áp dụng trong trường hợp > 1GB RAM
+# LD_LIBRARY_PATH để hệ thống có thể tìm thấy các shared libraries cần thiết tại thư mục mới thay vì thư mục mặc đinh (/lib/x86_64-linux-gnu hoặc /lib/aarch64-linux-gnu)
+# shared libraries không có trong /lib/multi-arch sẽ tiếp tục được load từ thư mục mặc định của hệ thống
 ENV PATH="/app/.venv/bin/:$PATH" \
     PYTHONPATH="/app/src/"\
     LANG=C.UTF-8 \
@@ -89,7 +96,8 @@ ENV PATH="/app/.venv/bin/:$PATH" \
     GIT_COMMIT_SHA=sha \
     LD_LIBRARY_PATH=/lib/multi-arch
 
-# nonroot user mặc định đã được sử dụng trong distroless base-debian12:nonroot nên không cần thiết phải thêm lệnh phía dưới # USER nonroot:nonroot
+# nonroot user mặc định đã được sử dụng trong distroless base-debian12:nonroot nên không cần thiết phải thêm lệnh phía dưới 
+# USER nonroot:nonroot
 # Expose port mặc định
 EXPOSE 8080
 
