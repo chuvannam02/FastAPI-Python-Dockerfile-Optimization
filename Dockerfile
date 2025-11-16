@@ -1,5 +1,5 @@
-
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:6b8ac7bb76766ffe9f6cc20f56789755d539e8d8e605d8983131227c5c8b87a1 AS builder 
+# syntax=docker/dockerfile:1.7-labs
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:2a2a8fdb0dd5e24df6bf6611237b2b1fe06e681ac47365cab58477bee3559978 AS builder 
 ENV UV_LINK_MODE=copy
 ARG TARGETARCH
 # Copy shared Libraries đủ để chạy ứng dụng trong môi trường distroless
@@ -11,16 +11,21 @@ ARG TARGETARCH
 # gcr.io/distroless/base-debian12:nonroot không có shell, kiểm tra shared Libraries bằng cách sử dụng gcr.io/distroless/base-debian12:debug
 # gcr.io/distroless/base-debian12:debug tương tự gcr.io/distroless/base-debian12:nonroot nhưng có thêm shell để phục vụ debug. 
 RUN if [ "$TARGETARCH" = "amd64" ]; then \
-    LIBARCH="x86_64"; \
+      LIBARCH="x86_64"; \
     elif [ "$TARGETARCH" = "arm64" ]; then \
-    LIBARCH="aarch64"; \
+      LIBARCH="aarch64"; \
     else \
-    LIBARCH="unknown"; \
+      LIBARCH="unknown"; \
     fi && \
     mkdir -p /lib/multi-arch && \
     cp /lib/${LIBARCH}-linux-gnu/libc.so.6 /lib/multi-arch/ && \
     cp /lib/${LIBARCH}-linux-gnu/libm.so.6 /lib/multi-arch/ && \
     cp /lib/${LIBARCH}-linux-gnu/libz.so.1 /lib/multi-arch/ && \
+    cp /lib/${LIBARCH}-linux-gnu/libzstd.so.1 /lib/multi-arch/ && \
+    cp /lib/${LIBARCH}-linux-gnu/liblzma.so.5 /lib/multi-arch/ && \
+    cp /lib/${LIBARCH}-linux-gnu/libbz2.so.1.0 /lib/multi-arch/ && \
+    cp /lib/${LIBARCH}-linux-gnu/libssl.so.3 /lib/multi-arch/ && \
+    cp /lib/${LIBARCH}-linux-gnu/libcrypto.so.3 /lib/multi-arch/ && \
     cp /lib/${LIBARCH}-linux-gnu/libgcc_s.so.1 /lib/multi-arch/
 
 WORKDIR /build
@@ -33,16 +38,17 @@ WORKDIR /build
 # --no-dev để không cài đặt dev dependencies
 # -no-editable để không cài đặt editable mode
 # starlette 8.46.2 dính CVE-2825-62727 CVE-2825-54121, nâng cấp để vá lỗi bảo mật (do thay đổi pyproject.toml và file uv.lock sẽ vi phạm nội c
-RUN --mount-type=cache, target=/root/.cache/uv \
-    --mount-type=bind, source=uv.lock, target=uv.lock \
-    --mount-type=bind, source=pyproject.toml, target=pyproject.toml \
-    uv sync-frozen-no-install-project --no-dev --no-editable && \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --frozen --no-install-project --no-dev --no-editable && \
     uv pip install "starlette==0.49.1" --no-deps
 
 # Sử dụng distroless làm base image cho runtime để đảm bảo tính bảo mật và tối ưu kích thước image
 # Chọn distroless thay vì alpine vì alpine sử dụng must libc, trong khi python và nhiều thư viện phổ biến trong python được biên dịch với glit # distroless giúp ứng dụng chạy ổn định hơn và cũng rất nhẹ.
 # cc-debian12 có nhiều shared Libraries cần thiết cho python và các package phổ biến hơn so với base-debian12
-# tuy nhiên khi đã kiểm tra kỹ các shared Libraries cần thiết (với lệnh Ldd) và copy đầy đủ từ builder stage thì base-debian12 sẽ giúp tối ưu FROM gcr.io/distroless/base-debian12: non root@sha256:10136f394cbc891efa9f20974a48843f21a6b3cbde55b1778582195d6726fa85 AS runtime
+# tuy nhiên khi đã kiểm tra kỹ các shared Libraries cần thiết (với lệnh Ldd) và copy đầy đủ từ builder stage thì base-debian12 sẽ giúp tối ưu 
+FROM gcr.io/distroless/base-debian13 AS runtime
 LABEL maintainer="Thanh Nguyen The"
 LABEL maintainer.email="thanhnt.devops@gmail.com"
 LABEL maintainer.company="VIETNAM NATIONAL CYBER SECURITY TECHNOLOGY CORPORATION"
@@ -52,7 +58,8 @@ WORKDIR /app
 
 # Copy các thư viện và python từ builder stage
 COPY --from=builder /lib/multi-arch/ /lib/multi-arch/
-COPY --from=builder /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0 COPY--from-builder /usr/local/lib/python3.13/ /usr/local/lib/python3.13/
+COPY --from=builder /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0 
+COPY --from=builder /usr/local/lib/python3.13/ /usr/local/lib/python3.13/
 COPY --from=builder /usr/local/bin/python /usr/local/bin/python3
 
 # Copy virtual environment từ builder
@@ -73,7 +80,7 @@ ENV PATH="/app/.venv/bin/:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONHASHSEED=random \
     HOST=0.0.0.0\
-    PORT=80801 \
+    PORT=8080 \
     WORKERS=2\
     LOGGING__LEVEL=INFO \
     LOGGING__FORMAT=PLAIN \
